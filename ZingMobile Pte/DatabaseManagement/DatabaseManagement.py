@@ -1,107 +1,114 @@
-from flask import Flask, jsonify, request
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
 
-app = Flask(__name__)
+const app = express();
+const PORT = process.env.PORT || 5000;
 
-# Sample data
-colleges_data = {
-    "Sri Chaitanya": {
-        "Telangana": {
-            "Hyderabad": {
-                "KPHB": {
-                    "A": {
-                        "students": [
-                            {"id": 1, "name": "John Doe", "section": "A", "marks": {"Math": 90, "Science": 85}},
-                            {"id": 2, "name": "Alice Smith", "section": "A", "marks": {"Math": 88, "Science": 82}}
-                        ]
-                    },
-                    "B": {
-                        "students": [
-                            {"id": 3, "name": "Bob Johnson", "section": "B", "marks": {"Math": 85, "Science": 80}},
-                            {"id": 4, "name": "Emily Davis", "section": "B", "marks": {"Math": 87, "Science": 84}}
-                        ]
-                    }
-                }
-            }
-        }
-    }
+// Middleware
+app.use(express.json());
+
+// Connect to SQLite database
+const db = new sqlite3.Database('./database.db', (err) => {
+  if (err) {
+    console.error('Error connecting to database:', err.message);
+  } else {
+    console.log('Connected to the SQLite database.');
+    createTables(); // Create tables when connected to the database
+  }
+});
+
+// Create tables if not exist
+function createTables() {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS colleges (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      state TEXT NOT NULL,
+      city TEXT NOT NULL,
+      campus TEXT NOT NULL,
+      section TEXT NOT NULL
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS students (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      section TEXT NOT NULL,
+      college_id INTEGER NOT NULL,
+      FOREIGN KEY (college_id) REFERENCES colleges(id)
+    )
+  `);
 }
 
-# Define roles
-ROLES = ["Super admin", "Admin", "Teacher", "Student"]
+// Middleware function to check user's role
+const checkRole = (requiredRole) => (req, res, next) => {
+  const { role } = req.query; // Assuming role is provided in query parameter for simplicity
+  if (!role || role !== requiredRole) {
+    return res.status(403).json({ message: 'Unauthorized' });
+  }
+  next(); // Proceed to the next middleware or route handler
+};
 
-# Helper function to check if the user has permission
-def has_permission(role, college=None, section=None):
-    if role == "Super admin":
-        return True
-    elif role == "Admin" and college in colleges_data:
-        return True
-    elif role == "Teacher" and college in colleges_data and section in colleges_data[college]:
-        return True
-    elif role == "Student":
-        return True
-    return False
+// Routes for colleges (only Super Admin and Admin have access)
+app.get('/api/colleges', checkRole('Super Admin'), (req, res) => {
+  db.all('SELECT * FROM colleges', (err, rows) => {
+    if (err) {
+      console.error('Error fetching colleges:', err);
+      res.status(500).json({ message: 'Internal server error' });
+    } else {
+      res.json(rows);
+    }
+  });
+});
 
-# Get all data
-@app.route('/api/data', methods=['GET'])
-def get_all_data():
-    role = request.headers.get('Role')
-    if role not in ROLES:
-        return jsonify({"message": "Invalid role"}), 403
+app.post('/api/colleges', checkRole('Admin'), (req, res) => {
+  const { name, state, city, campus, section } = req.body;
+  db.run('INSERT INTO colleges (name, state, city, campus, section) VALUES (?, ?, ?, ?, ?)',
+    [name, state, city, campus, section], (err) => {
+      if (err) {
+        console.error('Error creating college:', err);
+        res.status(500).json({ message: 'Internal server error' });
+      } else {
+        res.json({ message: 'College created successfully' });
+      }
+    });
+});
 
-    if not has_permission(role):
-        return jsonify({"message": "Permission denied"}), 403
+// Routes for students (Teacher and Student have access)
+app.get('/api/students', checkRole('Teacher'), (req, res) => {
+  const { section } = req.query;
+  if (!section) {
+    return res.status(400).json({ message: 'Section parameter is required' });
+  }
+  db.all('SELECT * FROM students WHERE section = ?', [section], (err, rows) => {
+    if (err) {
+      console.error('Error fetching students:', err);
+      res.status(500).json({ message: 'Internal server error' });
+    } else {
+      res.json(rows);
+    }
+  });
+});
 
-    return jsonify(colleges_data)
+app.get('/api/students/:id', checkRole('Student'), (req, res) => {
+  const { id } = req.params;
+  const { studentId } = req.query;
+  if (!studentId || studentId !== id) {
+    return res.status(403).json({ message: 'Unauthorized' });
+  }
+  db.get('SELECT * FROM students WHERE id = ?', [id], (err, row) => {
+    if (err) {
+      console.error('Error fetching student:', err);
+      res.status(500).json({ message: 'Internal server error' });
+    } else if (!row) {
+      res.status(404).json({ message: 'Student not found' });
+    } else {
+      res.json(row);
+    }
+  });
+});
 
-# Get data for a specific college
-@app.route('/api/data/college/<college_name>', methods=['GET'])
-def get_college_data(college_name):
-    role = request.headers.get('Role')
-    if role not in ROLES:
-        return jsonify({"message": "Invalid role"}), 403
-
-    if not has_permission(role, college=college_name):
-        return jsonify({"message": "Permission denied"}), 403
-
-    if college_name not in colleges_data:
-        return jsonify({"message": "College not found"}), 404
-
-    return jsonify(colleges_data[college_name])
-
-# Get data for a specific section within a college
-@app.route('/api/data/college/<college_name>/section/<section_name>', methods=['GET'])
-def get_section_data(college_name, section_name):
-    role = request.headers.get('Role')
-    if role not in ROLES:
-        return jsonify({"message": "Invalid role"}), 403
-
-    if not has_permission(role, college=college_name, section=section_name):
-        return jsonify({"message": "Permission denied"}), 403
-
-    if college_name not in colleges_data or section_name not in colleges_data[college_name]:
-        return jsonify({"message": "College or section not found"}), 404
-
-    return jsonify(colleges_data[college_name][section_name])
-
-# Get data for a specific student within a section of a college
-@app.route('/api/data/college/<college_name>/section/<section_name>/student/<int:student_id>', methods=['GET'])
-def get_student_data(college_name, section_name, student_id):
-    role = request.headers.get('Role')
-    if role not in ROLES:
-        return jsonify({"message": "Invalid role"}), 403
-
-    if not has_permission(role, college=college_name, section=section_name):
-        return jsonify({"message": "Permission denied"}), 403
-
-    if college_name not in colleges_data or section_name not in colleges_data[college_name]:
-        return jsonify({"message": "College or section not found"}), 404
-
-    students = colleges_data[college_name][section_name]["students"]
-    student = next((s for s in students if s["id"] == student_id), None)
-    if not student:
-        return jsonify({"message": "Student not found"}), 404
-
-    return jsonify(student)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+// Start the server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
